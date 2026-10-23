@@ -24,8 +24,10 @@ handle nagging; your own automations do that.
 
 ## Configuration
 
-Add the card from the dashboard card picker ("Dynamic Reminders Card") and pick
-the sensor that holds the reminders. In YAML:
+Add the card from the dashboard card picker ("Dynamic Reminders Card"). The
+first entity with a `reminders` attribute is picked for you, and the visual
+editor's entity list only shows entities that have one (it falls back to all
+sensors when none do). In YAML:
 
 ```yaml
 type: custom:dynamic-reminders-card

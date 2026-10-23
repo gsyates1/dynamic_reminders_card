@@ -7,7 +7,7 @@
  * update_dynamic_reminder and delete_dynamic_reminder events.
  */
 
-const CARD_VERSION = "1.0.0";
+const CARD_VERSION = "1.0.1";
 
 const EVENT_ADD = "add_dynamic_reminder";
 const EVENT_UPDATE = "update_dynamic_reminder";
@@ -103,6 +103,12 @@ const toTriggerTime = (dateValue, timeValue) => {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 };
 
+/** Entities whose state carries a `reminders` attribute. */
+const reminderEntities = (hass) =>
+  Object.keys(hass?.states ?? {}).filter(
+    (id) => hass.states[id]?.attributes?.reminders !== undefined
+  );
+
 const normalizeReminder = (id, raw) => ({
   unique_id: id,
   reminder: raw?.reminder == null ? "" : String(raw.reminder),
@@ -136,8 +142,10 @@ const STYLES = `
   .header {
     font-size: var(--ha-card-header-font-size, 24px);
     font-weight: var(--ha-font-weight-normal, 400);
+    font-family: var(--ha-card-header-font-family, inherit);
     color: var(--ha-card-header-color, var(--primary-text-color));
-    line-height: 1.3;
+    letter-spacing: -0.012em;
+    line-height: var(--ha-line-height-expanded, 1.3);
     margin: -4px 0 0;
   }
   .list {
@@ -170,7 +178,7 @@ const STYLES = `
     line-height: 1.4;
   }
   .secondary {
-    font-size: var(--ha-font-size-s, 14px);
+    font-size: var(--ha-font-size-m, 14px);
     color: var(--secondary-text-color);
     line-height: 1.4;
   }
@@ -203,8 +211,8 @@ const STYLES = `
   }
   .icon-button:hover,
   .icon-button:focus-visible {
-    background-color: rgba(127, 127, 127, 0.16);
     color: var(--primary-text-color);
+    background-color: color-mix(in srgb, currentColor 12%, transparent);
     outline: none;
   }
   .empty {
@@ -221,7 +229,7 @@ const STYLES = `
   .card-error {
     flex: 1 1 auto;
     color: var(--error-color, #db4437);
-    font-size: var(--ha-font-size-s, 14px);
+    font-size: var(--ha-font-size-m, 14px);
   }
   .btn {
     font-family: inherit;
@@ -239,7 +247,7 @@ const STYLES = `
   }
   .btn:hover,
   .btn:focus-visible {
-    background-color: rgba(127, 127, 127, 0.12);
+    background-color: color-mix(in srgb, currentColor 12%, transparent);
     outline: none;
   }
   .btn.filled {
@@ -273,7 +281,10 @@ const STYLES = `
     padding: 24px;
     border: none;
     border-radius: var(--ha-dialog-border-radius, 28px);
-    background: var(--mdc-theme-surface, var(--card-background-color, #fff));
+    background: var(
+      --ha-dialog-surface-background,
+      var(--mdc-theme-surface, var(--card-background-color, #fff))
+    );
     color: var(--primary-text-color);
     box-shadow: 0 11px 15px -7px rgba(0, 0, 0, 0.2), 0 24px 38px 3px rgba(0, 0, 0, 0.14),
       0 9px 46px 8px rgba(0, 0, 0, 0.12);
@@ -304,8 +315,8 @@ const STYLES = `
     padding: 8px 12px;
     border-radius: 8px;
     color: var(--error-color, #db4437);
-    background-color: rgba(219, 68, 55, 0.12);
-    font-size: var(--ha-font-size-s, 14px);
+    background-color: color-mix(in srgb, var(--error-color, #db4437) 12%, transparent);
+    font-size: var(--ha-font-size-m, 14px);
     line-height: 1.4;
   }
   .form-error ul {
@@ -345,8 +356,8 @@ const STYLES = `
     height: 48px;
     padding: 0 12px;
     font: inherit;
-    font-size: var(--ha-font-size-m, 16px);
-    color: var(--primary-text-color);
+    font-size: var(--ha-font-size-l, 16px);
+    color: var(--input-ink-color, var(--primary-text-color));
     background-color: var(--input-fill-color, var(--secondary-background-color, rgba(127, 127, 127, 0.08)));
     border: none;
     border-bottom: 1px solid var(--input-idle-line-color, var(--secondary-text-color));
@@ -450,11 +461,7 @@ class DynamicRemindersCard extends HTMLElement {
   }
 
   static getStubConfig(hass) {
-    const entity =
-      Object.keys(hass?.states ?? {}).find(
-        (id) => hass.states[id]?.attributes?.reminders !== undefined
-      ) ?? "";
-    return { entity };
+    return { entity: reminderEntities(hass)[0] ?? "" };
   }
 
   setConfig(config) {
@@ -933,8 +940,15 @@ class DynamicRemindersCard extends HTMLElement {
 /* Card editor                                                              */
 /* ------------------------------------------------------------------------ */
 
-const EDITOR_SCHEMA = [
-  { name: "entity", required: true, selector: { entity: { domain: "sensor" } } },
+/** Limit the entity picker to reminder sensors when there are any. */
+const editorSchema = (entities) => [
+  {
+    name: "entity",
+    required: true,
+    selector: {
+      entity: entities.length ? { include_entities: entities } : { filter: { domain: "sensor" } },
+    },
+  },
   { name: "title", selector: { text: {} } },
 ];
 
@@ -968,8 +982,14 @@ class DynamicRemindersCardEditor extends HTMLElement {
       });
       this.appendChild(this._form);
     }
+    // Only rebuild the schema when the set of reminder entities changes.
+    const entities = reminderEntities(this._hass);
+    const key = entities.join(",");
+    if (key !== this._entitiesKey || !this._form.schema) {
+      this._entitiesKey = key;
+      this._form.schema = editorSchema(entities);
+    }
     this._form.hass = this._hass;
-    this._form.schema = EDITOR_SCHEMA;
     this._form.data = this._config ?? {};
   }
 }
@@ -991,7 +1011,7 @@ if (!window.customCards.some((c) => c.type === "dynamic-reminders-card")) {
     type: "dynamic-reminders-card",
     name: "Dynamic Reminders Card",
     description: "View, add, edit and delete dynamic reminders.",
-    preview: false,
+    preview: true,
     documentationURL: "https://github.com/gsyates1/dynamic_reminders_card",
   });
 }
