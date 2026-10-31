@@ -22,12 +22,18 @@ handle nagging; your own automations do that.
    `/local/dynamic-reminders-card.js` as a **JavaScript module**.
 3. Reload the browser.
 
+## Requirements
+
+The [Reminders integration](https://github.com/gsyates1/reminders_integration)
+must be installed and set up. The card reads `sensor.dynamic_reminders` and
+changes reminders through the integration's actions.
+
 ## Configuration
 
-Add the card from the dashboard card picker ("Dynamic Reminders Card"). The
-first entity with a `reminders` attribute is picked for you, and the visual
-editor's entity list only shows entities that have one (it falls back to all
-sensors when none do). In YAML:
+Add the card from the dashboard card picker ("Dynamic Reminders Card").
+`sensor.dynamic_reminders` is picked for you, and the visual editor's entity
+list only shows entities whose `reminders` attribute holds dynamic reminders
+(it falls back to all sensors when none do). In YAML:
 
 ```yaml
 type: custom:dynamic-reminders-card
@@ -45,44 +51,46 @@ sections view it fills the card's grid height.
 
 ## Data model
 
-The sensor's `reminders` attribute is a dictionary keyed by the reminder's
-`unique_id` (a GUID):
+The sensor's `reminders` attribute is a dictionary keyed by the reminder ID,
+which the integration generates:
 
 ```python
 {
-  "3": {"reminder": "this is a test also", "next_trigger_time": "2026-10-20T08:57:25.000Z",
-        "repeat_frequency": 30, "nag": False},
-  "1": {"reminder": "this is a test", "next_trigger_time": "2026-10-20T14:35:00.000Z",
-        "repeat_frequency": 0, "nag": True},
+  "a3f9c21e": {"reminder": "Change the furnace filter",
+               "next_trigger_time": "2026-12-01 09:00:00-05:00",
+               "repeat_frequency": 30, "nag": False},
 }
 ```
 
-| Attribute           | Meaning                                                         |
-| ------------------- | --------------------------------------------------------------- |
-| `reminder`          | Reminder text                                                   |
-| `next_trigger_time` | `YYYY-MM-DDTHH:MM:SS.000Z`. The trailing `Z` is read as UTC.    |
-| `repeat_frequency`  | Repeat interval in days; `0` = one-time                         |
-| `nag`               | `true` / `false`                                                |
+| Attribute           | Meaning                                                          |
+| ------------------- | ---------------------------------------------------------------- |
+| `reminder`          | Reminder text                                                    |
+| `next_trigger_time` | Date and time with a UTC offset, e.g. `2026-10-31 11:33:10.095534-04:00` |
+| `repeat_frequency`  | Repeat interval in days; `0` = one-time                          |
+| `nag`               | `true` / `false`                                                 |
 
 `next_trigger_time` is shown in the browser's local time zone. When you save,
-the date and time you pick (local time) are converted to UTC in the same
-format. When you edit a reminder without changing its date or time, the
-existing value is sent back unchanged.
+the date and time you pick are sent in the browser's local time with its UTC
+offset (e.g. `2026-11-02 09:30:00-05:00`), so the stored time is the moment
+you picked even if Home Assistant uses a different time zone.
 
-## Events fired
+## Actions called
 
-| Action | Event type                | Event data                                                                   |
-| ------ | ------------------------- | ---------------------------------------------------------------------------- |
-| Add    | `add_dynamic_reminder`    | `unique_id` (new GUID), `reminder`, `next_trigger_time`, `repeat_frequency`, `nag` |
-| Edit   | `update_dynamic_reminder` | `unique_id` plus all four fields (unchanged fields carry their existing value) |
-| Delete | `delete_dynamic_reminder` | `unique_id`                                                                  |
+| Card action | Integration action        | Data sent                                                        |
+| ----------- | ------------------------- | ---------------------------------------------------------------- |
+| Add         | `reminders.add_dynamic`   | `reminder`, `next_trigger_time`, `repeat_frequency`, `nag`        |
+| Edit        | `reminders.update_dynamic`| `id` plus only the fields you changed (nothing is sent if none changed) |
+| Delete      | `reminders.delete_dynamic`| `id`                                                             |
 
 `repeat_frequency` is sent as an integer (an empty "Repeat every" field sends
-`0`) and `nag` as a boolean.
+`0`) and `nag` as a boolean. The new reminder's ID comes back in the
+`add_dynamic` response. Until it arrives (normally a fraction of a second) the
+new row's edit and delete buttons do nothing.
 
-Events are fired through the Home Assistant WebSocket API (`fire_event`), which
-**requires an administrator user**. For a non-admin user, the card shows an
-error under the list and leaves the reminders as they were.
+If the integration rejects a call (for example an unknown ID, or the
+integration isn't loaded), the card shows its error message under the list and
+leaves the reminders as they were. Unlike the old events, actions don't need an
+administrator user.
 
 ## Display
 
