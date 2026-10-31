@@ -2,16 +2,22 @@
  * Dynamic Reminders Card
  *
  * A Home Assistant Lovelace card for viewing, adding, editing and deleting
- * dynamic reminders. Reminders are read from the `reminders` attribute of a
- * (template) sensor and modified by firing the add_dynamic_reminder,
- * update_dynamic_reminder and delete_dynamic_reminder events.
+ * dynamic reminders. Reminders are read from the `reminders` attribute of the
+ * Reminders integration's sensor (sensor.dynamic_reminders) and changed by
+ * calling its reminders.add_dynamic, reminders.update_dynamic and
+ * reminders.delete_dynamic actions.
  */
 
-const CARD_VERSION = "1.0.1";
+const CARD_VERSION = "2.0.0";
 
-const EVENT_ADD = "add_dynamic_reminder";
-const EVENT_UPDATE = "update_dynamic_reminder";
-const EVENT_DELETE = "delete_dynamic_reminder";
+const DOMAIN = "reminders";
+const ACTION_ADD = "add_dynamic";
+const ACTION_UPDATE = "update_dynamic";
+const ACTION_DELETE = "delete_dynamic";
+
+// A new reminder is shown under a temporary ID until the integration
+// returns the ID it generated.
+const TEMP_ID_PREFIX = "pending-";
 
 // How long an optimistic (not yet confirmed by the sensor) change is shown
 // before falling back to whatever the sensor reports.
@@ -60,9 +66,36 @@ const toRepeat = (value) => {
   return Number.isFinite(n) && n > 0 ? n : 0;
 };
 
+// "2026-10-31 11:33:10.095534-04:00", "2026-12-01 09:00:00-05:00",
+// "2026-10-20T08:57:25.000Z", ... (the integration stores the first two forms)
+const TRIGGER_TIME_RE =
+  /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?\s*(Z|[+-]\d{2}:?\d{2})?$/i;
+
+/**
+ * Parse a trigger time without relying on Date's lenient (and browser
+ * dependent) parsing of non-ISO strings such as a space separator or six
+ * fraction digits. A value with an offset or Z is an absolute time; one
+ * without is read as browser local time.
+ */
 const parseTriggerTime = (value) => {
   if (!value) return null;
-  const date = new Date(value);
+  const m = TRIGGER_TIME_RE.exec(String(value).trim());
+  if (!m) return null;
+  const [, y, mo, d, h, mi, sec = "0", frac = "0", offset] = m;
+  const ms = Math.round(Number(`0.${frac}`) * 1000);
+  let time;
+  if (offset) {
+    time = Date.UTC(+y, +mo - 1, +d, +h, +mi, +sec, ms);
+    if (offset.toUpperCase() !== "Z") {
+      const sign = offset[0] === "-" ? -1 : 1;
+      const digits = offset.slice(1).replace(":", "");
+      const minutes = +digits.slice(0, 2) * 60 + +digits.slice(2);
+      time -= sign * minutes * 60000;
+    }
+  } else {
+    time = new Date(+y, +mo - 1, +d, +h, +mi, +sec, ms).getTime();
+  }
+  const date = new Date(time);
   return Number.isNaN(date.getTime()) ? null : date;
 };
 
@@ -95,19 +128,53 @@ const toDateInput = (date) =>
 /** Value for <input type="time"> in local time. */
 const toTimeInput = (date) => `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
 
-/** Combine local date + time input values into 'YYYY-MM-DDTHH:MM:SS.000Z'. */
+/**
+ * Combine local date + time input values into 'YYYY-MM-DD HH:MM:SS±HH:MM',
+ * using the browser's UTC offset for that date. The offset makes it an
+ * absolute time, so the integration stores the moment the user picked even
+ * when Home Assistant's time zone differs from the browser's.
+ */
 const toTriggerTime = (dateValue, timeValue) => {
   const [y, mo, d] = dateValue.split("-").map(Number);
   const [h, mi] = timeValue.split(":").map(Number);
   const date = new Date(y, mo - 1, d, h, mi, 0, 0);
-  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+  if (Number.isNaN(date.getTime())) return null;
+  const offset = -date.getTimezoneOffset();
+  const abs = Math.abs(offset);
+  const sign = offset < 0 ? "-" : "+";
+  return (
+    `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ` +
+    `${pad2(date.getHours())}:${pad2(date.getMinutes())}:00` +
+    `${sign}${pad2(Math.floor(abs / 60))}:${pad2(abs % 60)}`
+  );
 };
 
-/** Entities whose state carries a `reminders` attribute. */
+/** Dynamic reminder collections are {id: {...}}; plain ones are {id: "text"}. */
+const isDynamicCollection = (raw) => {
+  if (typeof raw === "string") {
+    try {
+      raw = JSON.parse(raw);
+    } catch (_err) {
+      return false;
+    }
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
+  return Object.values(raw).every((v) => v && typeof v === "object");
+};
+
+/**
+ * Entities whose `reminders` attribute looks like a dynamic reminders
+ * collection. This leaves out the integration's sensor.reminders once it
+ * holds any (plain text) reminders. Entities with "dynamic" in their ID are
+ * listed first so the card picker defaults to sensor.dynamic_reminders.
+ */
 const reminderEntities = (hass) =>
-  Object.keys(hass?.states ?? {}).filter(
-    (id) => hass.states[id]?.attributes?.reminders !== undefined
-  );
+  Object.keys(hass?.states ?? {})
+    .filter((id) => {
+      const raw = hass.states[id]?.attributes?.reminders;
+      return raw !== undefined && isDynamicCollection(raw);
+    })
+    .sort((a, b) => Number(!a.includes("dynamic")) - Number(!b.includes("dynamic")) || a.localeCompare(b));
 
 const normalizeReminder = (id, raw) => ({
   unique_id: id,
@@ -760,6 +827,8 @@ class DynamicRemindersCard extends HTMLElement {
     const button = ev.target.closest("button[data-action]");
     if (!button) return;
     const id = button.closest(".row")?.dataset.id;
+    // A new reminder can't be edited or deleted until the integration has given it an ID.
+    if (!id || id.startsWith(TEMP_ID_PREFIX)) return;
     const reminder = this._reminders().find((r) => r.unique_id === id);
     if (!reminder) return;
     if (button.dataset.action === "edit") this._openEditor(reminder);
@@ -868,18 +937,34 @@ class DynamicRemindersCard extends HTMLElement {
       return;
     }
 
-    const isEdit = Boolean(this._editing);
-    const uniqueId = isEdit ? this._editing.unique_id : generateGuid();
-    const data = {
-      unique_id: uniqueId,
+    const fields = {
       reminder: text,
       next_trigger_time: triggerTime,
       repeat_frequency: repeat,
       nag: els.nag.checked,
     };
-
     els.editDialog.close();
-    this._fire(isEdit ? EVENT_UPDATE : EVENT_ADD, data, uniqueId, { op: "upsert", data });
+
+    if (!this._editing) {
+      this._call(ACTION_ADD, fields, `${TEMP_ID_PREFIX}${generateGuid()}`, {
+        op: "upsert",
+        data: fields,
+      });
+      return;
+    }
+
+    // update_dynamic changes only the fields it is given, so send just those
+    // the user changed.
+    const original = this._editing;
+    const changes = {};
+    for (const [key, value] of Object.entries(fields)) {
+      if (value !== original[key]) changes[key] = value;
+    }
+    if (Object.keys(changes).length === 0) return;
+    this._call(ACTION_UPDATE, { id: original.unique_id, ...changes }, original.unique_id, {
+      op: "upsert",
+      data: { ...original, ...changes },
+    });
   }
 
   /* ---- Delete dialog --------------------------------------------------- */
@@ -895,25 +980,44 @@ class DynamicRemindersCard extends HTMLElement {
     const reminder = this._deleting;
     this._els.deleteDialog.close();
     if (!reminder) return;
-    this._fire(EVENT_DELETE, { unique_id: reminder.unique_id }, reminder.unique_id, {
+    this._call(ACTION_DELETE, { id: reminder.unique_id }, reminder.unique_id, {
       op: "delete",
     });
   }
 
-  /* ---- Events ---------------------------------------------------------- */
+  /* ---- Actions --------------------------------------------------------- */
 
-  async _fire(eventType, eventData, id, pendingChange) {
+  /**
+   * Call a Reminders integration action. The change is shown straight away
+   * (under `id`) and rolled back if the call fails. For add_dynamic, `id` is
+   * a temporary ID that is swapped for the one the integration returns.
+   */
+  async _call(action, serviceData, id, pendingChange) {
     const previous = this._pending.get(id);
     this._setPending(id, pendingChange);
     this._listKey = null;
     this._renderList();
     try {
       if (!this._hass) throw new Error("Home Assistant connection not available");
-      await this._hass.callWS({
-        type: "fire_event",
-        event_type: eventType,
-        event_data: eventData,
-      });
+      const isAdd = action === ACTION_ADD;
+      // notifyOnError = false: the card shows its own error message.
+      const result = await this._hass.callService(
+        DOMAIN,
+        action,
+        serviceData,
+        undefined,
+        false,
+        isAdd
+      );
+      if (isAdd) {
+        this._pending.delete(id);
+        const newId = result?.response?.id;
+        if (newId && this._source[newId] === undefined) {
+          this._setPending(String(newId), pendingChange);
+        }
+        this._listKey = null;
+        this._renderList();
+      }
     } catch (err) {
       if (previous) this._pending.set(id, previous);
       else this._pending.delete(id);
