@@ -49,6 +49,19 @@ title: Reminders   # optional
 In a masonry view the list grows up to 400px tall and then scrolls. In a
 sections view it fills the card's grid height.
 
+### Reminders disappear after leaving the page
+
+New reminders show straight away, but the list then shows what the
+configured entity reports. If they vanish after you leave and come back, the
+card is pointed at an entity that isn't the integration's dynamic reminders
+sensor. A common cause: the old template sensor wasn't deleted before the
+integration was added, so the old `sensor.dynamic_reminders` is left as
+"unavailable" and the integration's sensor became
+`sensor.dynamic_reminders_2`. Either change the card's entity, or delete the
+old entity and rename the new one (see the integration's install steps). The
+card shows a warning under the list when its entity has no dynamic reminders
+attribute.
+
 ## Data model
 
 The sensor's `reminders` attribute is a dictionary keyed by the reminder ID,

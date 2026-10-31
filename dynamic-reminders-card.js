@@ -8,7 +8,7 @@
  * reminders.delete_dynamic actions.
  */
 
-const CARD_VERSION = "2.0.0";
+const CARD_VERSION = "2.0.1";
 
 const DOMAIN = "reminders";
 const ACTION_ADD = "add_dynamic";
@@ -286,6 +286,10 @@ const STYLES = `
     padding: 16px;
     color: var(--secondary-text-color);
     white-space: nowrap;
+  }
+  .empty.warning {
+    color: var(--warning-color, #ff9800);
+    white-space: normal;
   }
   .footer {
     display: flex;
@@ -788,14 +792,40 @@ class DynamicRemindersCard extends HTMLElement {
       html = `<div class="empty">Entity not available: ${escapeHtml(entityId)}</div>`;
     } else {
       const reminders = this._reminders();
-      html = reminders.length
-        ? reminders.map((r) => this._rowHtml(r)).join("")
-        : `<div class="empty">No reminders</div>`;
+      const problem = this._sourceProblem(entityId, stateObj);
+      html = reminders.map((r) => this._rowHtml(r)).join("");
+      if (problem) html += `<div class="empty warning">${escapeHtml(problem)}</div>`;
+      else if (!reminders.length) html = `<div class="empty">No reminders</div>`;
     }
 
     if (html === this._listKey) return;
     this._listKey = html;
     this._els.rows.innerHTML = html;
+  }
+
+  /**
+   * Explain why the configured entity can't supply dynamic reminders, e.g.
+   * the card still points at the old template sensor (now "unavailable")
+   * while the integration created sensor.dynamic_reminders_2.
+   */
+  _sourceProblem(entityId, stateObj) {
+    if (!stateObj) return null;
+    const raw = stateObj.attributes?.reminders;
+    let problem = null;
+    if (raw === undefined) {
+      problem = `${entityId} (state: ${stateObj.state}) has no 'reminders' attribute, so no reminders can be shown.`;
+    } else if (!isDynamicCollection(raw)) {
+      problem = `${entityId} holds plain reminders, not dynamic reminders.`;
+    }
+    if (!problem) return null;
+    const candidates = reminderEntities(this._hass).filter((id) => id !== entityId);
+    const fromIntegration = candidates.filter(
+      (id) => this._hass?.entities?.[id]?.platform === DOMAIN
+    );
+    const suggestion = fromIntegration[0] ?? candidates[0];
+    return suggestion
+      ? `${problem} Change the card's entity to ${suggestion}.`
+      : `${problem} Change the card's entity to the Reminders integration's Dynamic Reminders sensor.`;
   }
 
   _rowHtml(r) {
